@@ -1,5 +1,6 @@
-using ApiInvoices.Api.Dtos;
+using ApiInvoices.Application.DTOs;
 using ApiInvoices.Application.Interfaces;
+using ApiInvoices.Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -18,9 +19,29 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpPost]
-    public async Task<ActionResult<ApiResponse<InvoiceResponseDto>>> Create(InvoiceCreateRequestDto request)
+    public async Task<IActionResult> Create([FromBody] InvoiceCreateRequest request)
     {
-        var invoice = await invoiceService.CreateAsync(request);
-        return Ok(ApiResponse<InvoiceResponseDto>.Ok("Invoice saved successfully.", invoice));
+        var result = await invoiceService.CreateAsync(request);
+        if (result == null)
+            return BadRequest(ApiResponse<object>.Error("invoice could not be saved"));
+
+        return Ok(ApiResponse<InvoiceCreateResponse>.Ok(result, "invoice saved"));
+    }
+
+    [HttpPut("{id}/cancel")]
+    public async Task<IActionResult> Cancel(int id)
+    {
+        var cancelled = await invoiceService.CancelAsync(id);
+        if (!cancelled)
+            return BadRequest(ApiResponse<object>.Error("invoice not found or already cancelled"));
+
+        return Ok(ApiResponse<object>.Ok(null!, "invoice cancelled"));
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> GetList()
+    {
+        var list = await invoiceService.GetListAsync();
+        return Ok(ApiResponse<IEnumerable<InvoiceListResponse>>.Ok(list));
     }
 }

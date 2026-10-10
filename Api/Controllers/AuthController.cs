@@ -1,4 +1,4 @@
-using ApiInvoices.Api.Dtos;
+using ApiInvoices.Application.DTOs;
 using ApiInvoices.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
@@ -9,43 +9,40 @@ namespace ApiInvoices.Api.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly IAuthService authService;
-    private readonly IConfiguration configuration;
 
-    public AuthController(IAuthService authService, IConfiguration configuration)
+    public AuthController(IAuthService authService)
     {
         this.authService = authService;
-        this.configuration = configuration;
     }
 
     [HttpPost("login")]
-    public async Task<ActionResult<ApiResponse<AuthResponseDto>>> Login(LoginRequestDto request)
+    public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
-        var response = await authService.LoginAsync(request);
-        SetRefreshCookie(response.RefreshToken);
-        return Ok(ApiResponse<AuthResponseDto>.Ok("Authenticated successfully.", response));
-    }
+        var result = await authService.LoginAsync(request);
+        if (result == null)
+            return Unauthorized(ApiResponse<object>.Error("invalid credentials or inactive user"));
 
-    [HttpPost("refresh")]
-    public async Task<ActionResult<ApiResponse<AuthResponseDto>>> Refresh()
-    {
-        var cookieName = configuration["RefreshToken:CookieName"] ?? "refreshToken";
-        var refreshToken = Request.Cookies[cookieName] ?? string.Empty;
-        var response = await authService.RefreshAsync(refreshToken);
-        SetRefreshCookie(response.RefreshToken);
-        return Ok(ApiResponse<AuthResponseDto>.Ok("Token refreshed successfully.", response));
-    }
-
-    private void SetRefreshCookie(string refreshToken)
-    {
-        var cookieName = configuration["RefreshToken:CookieName"] ?? "refreshToken";
-        var refreshDays = configuration.GetValue("RefreshToken:Days", 7);
-
-        Response.Cookies.Append(cookieName, refreshToken, new CookieOptions
+        
+        var refreshToken = authService.CreateRefreshToken(request.Username.Trim());
+        Response.Cookies.Append("refreshToken", refreshToken, new CookieOptions
         {
             HttpOnly = true,
             Secure = true,
-            SameSite = SameSiteMode.None,
-            Expires = DateTimeOffset.UtcNow.AddDays(refreshDays)
+            SameSite = SameSiteMode.Strict,
+            Expires = DateTimeOffset.UtcNow.AddDays(7)
         });
+
+        return Ok(ApiResponse<LoginResponse>.Ok(result, "login successful"));
+    }
+
+    [HttpPost("refresh")]
+    public async Task<IActionResult> Refresh()
+    {
+        var refreshToken = Request.Cookies["refreshToken"];
+        var result = await authService.RefreshAsync(refreshToken ?? string.Empty);
+        if (result == null)
+            return Unauthorized(ApiResponse<object>.Error("invalid or expired refresh token"));
+
+        return Ok(ApiResponse<LoginResponse>.Ok(result, "token refreshed"));
     }
 }
