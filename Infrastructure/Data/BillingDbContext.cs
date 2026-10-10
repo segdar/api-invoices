@@ -1,7 +1,6 @@
 using ApiInvoices.Domain.Entities;
+using ApiInvoices.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
-
-namespace ApiInvoices.Infrastructure.Data;
 
 public class BillingDbContext : DbContext
 {

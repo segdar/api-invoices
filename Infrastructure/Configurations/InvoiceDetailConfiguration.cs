@@ -16,11 +16,6 @@ public class InvoiceDetailConfiguration : IEntityTypeConfiguration<InvoiceDetail
         builder.Property(detail => detail.Quantity).HasColumnName("QUANTITY").IsRequired();
         builder.Property(detail => detail.Price).HasColumnName("PRICE").HasColumnType("decimal(18,2)").IsRequired();
         builder.Property(detail => detail.Subtotal).HasColumnName("SUBTOTAL").HasColumnType("decimal(18,2)").IsRequired();
-        builder.HasOne(detail => detail.InvoiceHeader)
-            .WithMany(header => header.Details)
-            .HasForeignKey(detail => detail.InvoiceHeaderId);
-        builder.HasOne(detail => detail.Product)
-            .WithMany(product => product.InvoiceDetails)
-            .HasForeignKey(detail => detail.ProductId);
+       
     }
 }

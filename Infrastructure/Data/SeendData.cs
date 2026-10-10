@@ -1,9 +1,9 @@
 ﻿using ApiInvoices.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
-namespace ApiInvoices.Infrastructure.Data
-{
-    public class SeendData
+namespace ApiInvoices.Infrastructure.Data;
+
+ public class SeendData
     {
         public static void Seed(ModelBuilder modelBuilder)
         {
@@ -30,4 +30,4 @@ namespace ApiInvoices.Infrastructure.Data
             );
         }
     }
-}
+
