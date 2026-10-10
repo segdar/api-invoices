@@ -1,13 +1,12 @@
+using ApiInvoices.Application.DTOs;
+using ApiInvoices.Application.Interfaces;
+using ApiInvoices.Infrastructure.Repositories;
+using Microsoft.IdentityModel.Tokens;
+using System.Collections.Concurrent;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using System.Security.Cryptography;
 using System.Text;
-using ApiInvoices.Api.Dtos;
-using ApiInvoices.Application.Interfaces;
-using ApiInvoices.Application.Validations;
-using ApiInvoices.Domain.Entities;
-using Microsoft.Extensions.Configuration;
-using Microsoft.IdentityModel.Tokens;
+
 
 namespace ApiInvoices.Application.Services;
 
@@ -16,106 +15,134 @@ public class AuthService : IAuthService
     private readonly IUserRepository userRepository;
     private readonly IConfiguration configuration;
 
+    private static readonly ConcurrentDictionary<string, (string Username, DateTime ExpiresAt)> RefreshTokens = new();
+
     public AuthService(IUserRepository userRepository, IConfiguration configuration)
     {
         this.userRepository = userRepository;
         this.configuration = configuration;
     }
 
-    public async Task<AuthResponseDto> LoginAsync(LoginRequestDto request)
+
+    public async Task<LoginResponse?> LoginAsync(LoginRequest request)
     {
-        var username = request.Username.Trim();
-        var password = request.Password.Trim();
+        var username = (request.Username ?? string.Empty).Trim();
+        var password = (request.Password ?? string.Empty).Trim();
 
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
-        {
-            throw new ValidationException("Username and password are required.");
-        }
+            return null;
 
         var user = await userRepository.GetByUsernameAsync(username);
-        if (user is null || !BCrypt.Net.BCrypt.Verify(password, user.PasswordHash))
+        if (user == null) return null;
+
+        
+        if (!BCrypt.Net.BCrypt.Verify(password, user.PasswordHash))
+            return null;
+
+        if (user.Status != "active")
+            return null;
+
+        var refreshToken = CreateRefreshToken(user.Username);
+
+        return new LoginResponse
         {
-            throw new UnauthorizedAccessException("Invalid username or password.");
-        }
-
-        if (!string.Equals(user.Status, "active", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new UnauthorizedAccessException("Inactive users cannot authenticate.");
-        }
-
-        return await IssueTokensAsync(user);
-    }
-
-    public async Task<AuthResponseDto> RefreshAsync(string refreshToken)
-    {
-        if (string.IsNullOrWhiteSpace(refreshToken))
-        {
-            throw new UnauthorizedAccessException("Refresh token was not found.");
-        }
-
-        var user = await userRepository.GetByRefreshTokenAsync(refreshToken);
-        if (user is null || user.RefreshTokenExpiresAt <= DateTime.UtcNow)
-        {
-            throw new UnauthorizedAccessException("Invalid refresh token.");
-        }
-
-        if (!string.Equals(user.Status, "active", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new UnauthorizedAccessException("Inactive users cannot refresh tokens.");
-        }
-
-        return await IssueTokensAsync(user);
-    }
-
-    private async Task<AuthResponseDto> IssueTokensAsync(User user)
-    {
-        var expiresAt = DateTime.UtcNow.AddMinutes(configuration.GetValue("Jwt:AccessTokenMinutes", 30));
-        var refreshDays = configuration.GetValue("RefreshToken:Days", 7);
-
-        user.RefreshToken = GenerateRefreshToken();
-        user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(refreshDays);
-        await userRepository.UpdateAsync(user);
-
-        return new AuthResponseDto
-        {
-            AccessToken = GenerateJwt(user, expiresAt),
-            ExpiresAt = expiresAt,
-            RefreshToken = user.RefreshToken,
-            User = new UserDto
-            {
-                Id = user.Id,
-                Username = user.Username,
-                Name = user.Name,
-                Email = user.Email,
-                Status = user.Status
-            }
+            AccessToken = GenerateJwt(user.Username, user.Email),
+            RefreshToken = refreshToken,
+            Name = user.Name,
+            Email = user.Email
         };
     }
 
-    private string GenerateJwt(User user, DateTime expiresAt)
+    public Task LogoutAsync(string refreshToken)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(configuration["Jwt:Key"]!));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        if (!string.IsNullOrWhiteSpace(refreshToken))
+            RefreshTokens.TryRemove(refreshToken, out _);
+        return Task.CompletedTask;
+    }
+
+    public string CreateRefreshToken(string username)
+    {
+        var token = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+        RefreshTokens[token] = (username, DateTime.UtcNow.AddDays(7));
+        return token;
+    }
+
+    public bool ValidateRefreshToken(string refreshToken)
+    {
+        if (string.IsNullOrWhiteSpace(refreshToken))
+            return false;
+
+        if (!RefreshTokens.TryGetValue(refreshToken, out var entry))
+            return false;
+
+        if (entry.ExpiresAt < DateTime.UtcNow)
+        {
+            RefreshTokens.TryRemove(refreshToken, out _);
+            return false;
+        }
+
+        return true;
+    }
+
+    public async Task<LoginResponse?> RefreshAsync(string refreshToken)
+    {
+        if (string.IsNullOrWhiteSpace(refreshToken))
+            return null;
+
+        if (!RefreshTokens.TryGetValue(refreshToken, out var entry))
+            return null;
+
+        
+        if (entry.ExpiresAt < DateTime.UtcNow)
+        {
+            RefreshTokens.TryRemove(refreshToken, out _);
+            return null;
+        }
+
+        
+        var user = await userRepository.GetByUsernameAsync(entry.Username);
+        if (user == null || user.Status != "active")
+        {
+            RefreshTokens.TryRemove(refreshToken, out _);
+            return null;
+        }
+
+        
+        RefreshTokens.TryRemove(refreshToken, out _);
+        var newRefreshToken = CreateRefreshToken(user.Username);
+
+        return new LoginResponse
+        {
+            AccessToken = GenerateJwt(user.Username, user.Email),
+            RefreshToken = newRefreshToken,
+            Name = user.Name,
+            Email = user.Email
+        };
+    }
+
+
+    private string GenerateJwt(string username, string email)
+    {
+        var key = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(configuration["Jwt:Key"]!));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
         var claims = new[]
         {
-            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new Claim(JwtRegisteredClaimNames.UniqueName, user.Username),
-            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new Claim(ClaimTypes.Name, user.Username)
+            new Claim(JwtRegisteredClaimNames.Sub, username),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Name, username),
+            new Claim(ClaimTypes.Email, email)
         };
 
         var token = new JwtSecurityToken(
             issuer: configuration["Jwt:Issuer"],
             audience: configuration["Jwt:Audience"],
             claims: claims,
-            expires: expiresAt,
-            signingCredentials: credentials);
+            expires: DateTime.UtcNow.AddMinutes(
+                double.Parse(configuration["Jwt:ExpiresMinutes"] ?? "60")),
+            signingCredentials: creds);
 
         return new JwtSecurityTokenHandler().WriteToken(token);
-    }
-
-    private static string GenerateRefreshToken()
-    {
-        return Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
     }
 }

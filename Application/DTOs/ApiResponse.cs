@@ -1,6 +1,4 @@
-﻿using ApiInvoices.Api.Dtos;
-
-namespace ApiInvoices.Application.DTOs
+﻿namespace ApiInvoices.Application.DTOs
 {
     public class ApiResponse<T>
     {

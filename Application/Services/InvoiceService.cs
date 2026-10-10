@@ -1,104 +1,103 @@
-using ApiInvoices.Api.Dtos;
+using ApiInvoices.Application.DTOs;
 using ApiInvoices.Application.Interfaces;
-using ApiInvoices.Application.Validations;
 using ApiInvoices.Domain.Entities;
+using ApiInvoices.Infrastructure.Data;
+
+
 
 namespace ApiInvoices.Application.Services;
 
 public class InvoiceService : IInvoiceService
 {
     private readonly IInvoiceRepository invoiceRepository;
+    private readonly BillingDbContext context;
 
-    public InvoiceService(IInvoiceRepository invoiceRepository)
+    public InvoiceService(IInvoiceRepository invoiceRepository, BillingDbContext context)
     {
         this.invoiceRepository = invoiceRepository;
+        this.context = context;
     }
 
-    public async Task<InvoiceResponseDto> CreateAsync(InvoiceCreateRequestDto request)
+    public async Task<bool> CancelAsync(int id)
     {
-        await ValidateAsync(request);
+        var header = await invoiceRepository.GetByIdAsync(id);
+        if (header == null) return false;
+        if (header.Status == "cancelled") return false; 
 
-        var invoiceHeader = new InvoiceHeader
-        {
-            ClientId = request.ClientId,
-            InvoiceNumber = request.InvoiceNumber.Trim(),
-            InvoiceDate = request.InvoiceDate,
-            Status = request.Status.Trim().ToLowerInvariant(),
-            Details = request.Details.Select(detail => new InvoiceDetail
-            {
-                ProductId = detail.ProductId,
-                Quantity = detail.Quantity,
-                Price = detail.Price,
-                Subtotal = detail.Quantity * detail.Price
-            }).ToList()
-        };
-
-        invoiceHeader.TotalAmount = invoiceHeader.Details.Sum(detail => detail.Subtotal);
-        await invoiceRepository.AddAsync(invoiceHeader);
-
-        return new InvoiceResponseDto
-        {
-            InvoiceHeaderId = invoiceHeader.InvoiceHeaderId,
-            ClientId = invoiceHeader.ClientId,
-            InvoiceNumber = invoiceHeader.InvoiceNumber,
-            InvoiceDate = invoiceHeader.InvoiceDate,
-            Status = invoiceHeader.Status,
-            TotalAmount = invoiceHeader.TotalAmount,
-            Details = invoiceHeader.Details.Select(detail => new InvoiceDetailResponseDto
-            {
-                InvoiceDetailId = detail.InvoiceDetailId,
-                ProductId = detail.ProductId,
-                Quantity = detail.Quantity,
-                Price = detail.Price,
-                Subtotal = detail.Subtotal
-            }).ToList()
-        };
+        header.Status = "cancelled";
+        await invoiceRepository.SaveChangesAsync();
+        return true;
     }
 
-    private async Task ValidateAsync(InvoiceCreateRequestDto request)
+    
+
+    public async Task<InvoiceCreateResponse?> CreateAsync(InvoiceCreateRequest request)
     {
-        if (request.ClientId <= 0)
-        {
-            throw new ValidationException("ClientId is required.");
-        }
+        if (request.Details == null || request.Details.Count == 0)
+            return null;
 
-        if (string.IsNullOrWhiteSpace(request.InvoiceNumber))
+        
+        using var transaction = await context.Database.BeginTransactionAsync();
+        try
         {
-            throw new ValidationException("InvoiceNumber is required.");
-        }
-
-        if (!string.Equals(request.Status.Trim(), "saved", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(request.Status.Trim(), "cancelled", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ValidationException("Status must be saved or cancelled.");
-        }
-
-        if (request.Details.Count == 0)
-        {
-            throw new ValidationException("At least one invoice detail is required.");
-        }
-
-        if (!await invoiceRepository.ClientExistsAsync(request.ClientId))
-        {
-            throw new ValidationException("Client does not exist.");
-        }
-
-        if (await invoiceRepository.InvoiceNumberExistsAsync(request.InvoiceNumber.Trim()))
-        {
-            throw new ValidationException("InvoiceNumber already exists.");
-        }
-
-        foreach (var detail in request.Details)
-        {
-            if (detail.ProductId <= 0 || detail.Quantity <= 0 || detail.Price <= 0)
+            var header = new InvoiceHeader
             {
-                throw new ValidationException("Each detail must include a valid product, quantity and price.");
+                ClientId = request.ClientId,
+                InvoiceNumber = request.InvoiceNumber.Trim(),
+                InvoiceDate = request.InvoiceDate,
+                Status = "saved",
+                TotalAmount = 0
+            };
+            await invoiceRepository.AddHeaderAsync(header);
+            await invoiceRepository.SaveChangesAsync();
+
+            decimal total = 0;
+            foreach (var item in request.Details)
+            {
+                if (item.Quantity <= 0 || item.Price < 0)
+                    throw new InvalidOperationException("invalid detail");
+
+                var detail = new InvoiceDetail
+                {
+                    InvoiceHeaderId = header.InvoiceHeaderId,
+                    ProductId = item.ProductId,
+                    Quantity = item.Quantity,
+                    Price = item.Price,
+                    Subtotal = item.Quantity * item.Price
+                };
+                total += detail.Subtotal;
+                await invoiceRepository.AddDetailAsync(detail);
             }
 
-            if (!await invoiceRepository.ProductExistsAsync(detail.ProductId))
+            header.TotalAmount = total;
+            await invoiceRepository.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            return new InvoiceCreateResponse
             {
-                throw new ValidationException($"Product {detail.ProductId} does not exist.");
-            }
+                InvoiceHeaderId = header.InvoiceHeaderId,
+                TotalAmount = total
+            };
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            return null;
         }
     }
+
+    public async Task<IEnumerable<InvoiceListResponse>> GetListAsync()
+    {
+        var items = await invoiceRepository.GetListAsync();
+        return items.Select(x => new InvoiceListResponse
+        {
+            InvoiceDate = x.InvoiceDate,
+            InvoiceNumber = x.InvoiceNumber,
+            ClientName = x.ClientName,
+            TotalAmount = x.TotalAmount,
+            Status = x.Status
+        });
+    }
+
+    
 }
