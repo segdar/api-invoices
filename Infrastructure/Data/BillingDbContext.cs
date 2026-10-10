@@ -18,6 +18,6 @@ public class BillingDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(BillingDbContext).Assembly);
-        base.OnModelCreating(modelBuilder);
+        SeendData.Seed(modelBuilder);
     }
 }
